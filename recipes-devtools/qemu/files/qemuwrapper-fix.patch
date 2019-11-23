@@ -1,0 +1,184 @@
+diff --git a/meta/classes/gobject-introspection.bbclass b/meta/classes/gobject-introspection.bbclass
+index b6160b8..e4b510e 100644
+--- a/meta/classes/gobject-introspection.bbclass
++++ b/meta/classes/gobject-introspection.bbclass
+@@ -17,7 +17,7 @@ UNKNOWN_CONFIGURE_WHITELIST_append = " --enable-introspection --disable-introspe
+ 
+ # Generating introspection data depends on a combination of native and target
+ # introspection tools, and qemu to run the target tools.
+-DEPENDS_append_class-target = " gobject-introspection gobject-introspection-native qemu-native prelink-native"
++DEPENDS_append_class-target = " gobject-introspection gobject-introspection-native qemu-native prelink-native qemuwrapper-cross"
+ 
+ # Even though introspection is disabled on -native, gobject-introspection package is still
+ # needed for m4 macros.
+diff --git a/meta/classes/qemu.bbclass b/meta/classes/qemu.bbclass
+index f5c5780..372d087 100644
+--- a/meta/classes/qemu.bbclass
++++ b/meta/classes/qemu.bbclass
+@@ -22,13 +22,9 @@ def qemu_target_binary(data):
+ def qemu_wrapper_cmdline(data, rootfs_path, library_paths):
+     import string
+ 
+-    qemu_binary = qemu_target_binary(data)
+-    if qemu_binary == "qemu-allarch":
+-        qemu_binary = "qemuwrapper"
+-
+     qemu_options = data.getVar("QEMU_OPTIONS")    
+ 
+-    return "PSEUDO_UNLOAD=1 " + qemu_binary + " " + qemu_options + " -L " + rootfs_path\
++    return "PSEUDO_UNLOAD=1 " + "qemuwrapper" + " " + qemu_options + " -L " + rootfs_path\
+             + " -E LD_LIBRARY_PATH=" + ":".join(library_paths) + " "
+ 
+ # Next function will return a string containing the command that is needed to
+diff --git a/meta/recipes-devtools/qemu/files/qemuwrapperhelper.py b/meta/recipes-devtools/qemu/files/qemuwrapperhelper.py
+new file mode 100644
+index 0000000..967f5fd
+--- /dev/null
++++ b/meta/recipes-devtools/qemu/files/qemuwrapperhelper.py
+@@ -0,0 +1,27 @@
++import sys
++
++def qemu_get_parameters():
++    flag = 0
++    parameters=""
++
++    for i in sys.argv[1:-1]:
++        if "LD_LIBRARY_PATH=" in i:
++            flag = 1
++
++    if flag == 0:
++        for index, i in enumerate(sys.argv[1:-1]):
++            if sys.argv[index-1] == '-L':
++                parameters = parameters + "-E LD_LIBRARY_PATH=" + sys.argv[-1] + " " + i + " "
++            else:
++                parameters = parameters + i + " "
++    else:
++        for i in sys.argv[1:-1]:
++            if "LD_LIBRARY_PATH=" in i:
++                parameters = parameters + i + ":" + sys.argv[-1] + " "
++            else:
++                parameters = parameters + i + " "
++
++    print parameters
++
++if __name__ == '__main__':
++    qemu_get_parameters()
+diff --git a/meta/recipes-devtools/qemu/qemuwrapper-cross_1.0.bb b/meta/recipes-devtools/qemu/qemuwrapper-cross_1.0.bb
+index c983fba..3574286 100644
+--- a/meta/recipes-devtools/qemu/qemuwrapper-cross_1.0.bb
++++ b/meta/recipes-devtools/qemu/qemuwrapper-cross_1.0.bb
+@@ -1,6 +1,9 @@
+ SUMMARY = "QEMU wrapper script"
+ HOMEPAGE = "http://qemu.org"
+ LICENSE = "MIT"
++LIC_FILES_CHKSUM = "file://${COREBASE}/meta/COPYING.MIT;md5=3da9cfbcb788c80a0384361b4de20420"
++
++SRC_URI = "file://qemuwrapperhelper.py" 
+ 
+ S = "${WORKDIR}"
+ 
+@@ -12,37 +15,47 @@ do_populate_sysroot[depends] = ""
+ 
+ do_install () {
+ 	install -d ${D}${bindir_crossscripts}/
++	install qemuwrapperhelper.py ${D}${bindir_crossscripts}/
+ 
+ 	echo "#!/bin/sh" > ${D}${bindir_crossscripts}/qemuwrapper
+-	qemu_binary=${@qemu_target_binary(d)}
+-	qemu_options='${QEMU_OPTIONS}'
+-	echo "$qemu_binary $qemu_options \"\$@\"" >> ${D}${bindir_crossscripts}/qemuwrapper
+-	fallback_qemu_bin=
+-	case $qemu_binary in
+-		"qemu-i386")
+-			fallback_qemu_bin=qemu-x86_64
+-			;;
+-		"qemu-x86_64")
+-			fallback_qemu_bin=qemu-i386
+-			;;
+-		*)
+-			;;
+-	esac
+-
+-	if [ -n "$fallback_qemu_bin" ]; then
++
++        if ${@bb.utils.contains('MACHINE_FEATURES', 'qemu-usermode', 'true','false', d)}; then
++		qemu_binary=${@qemu_target_binary(d)}
++		qemu_options='${QEMU_OPTIONS}'
++		default_library_option='$D/${libdir}:$D/${base_libdir}'
++
++		echo "default_library_option=$default_library_option" >> ${D}${bindir_crossscripts}/qemuwrapper
++		echo "qemu_parameters=\`python ${D}${bindir_crossscripts}/qemuwrapperhelper.py \"\$@\" \$default_library_option \`" >> ${D}${bindir_crossscripts}/qemuwrapper
++		echo "$qemu_binary $qemu_options \$qemu_parameters" >> ${D}${bindir_crossscripts}/qemuwrapper
++		fallback_qemu_bin=
++		case $qemu_binary in
++			"qemu-i386")
++				fallback_qemu_bin=qemu-x86_64
++				;;
++			"qemu-x86_64")
++				fallback_qemu_bin=qemu-i386
++				;;
++			*)
++				;;
++		esac
++
++		if [ -n "$fallback_qemu_bin" ]; then
+ 
+ 		cat >> ${D}${bindir_crossscripts}/qemuwrapper << EOF
+ rc=\$?
+ if [ \$rc = 255 ]; then
+-	$fallback_qemu_bin "\$@"
++	$fallback_qemu_bin \$qemu_parameters
+ 	rc=\$?
+ fi
+ exit \$rc
+ EOF
+-
++		fi
++	else
++		echo "exit 1" >>  ${D}${bindir_crossscripts}/qemuwrapper
+ 	fi
+ 
+ 	chmod +x ${D}${bindir_crossscripts}/qemuwrapper
++	chmod +x ${D}${bindir_crossscripts}/qemuwrapperhelper.py
+ }
+ 
+ SYSROOT_DIRS += "${bindir_crossscripts}"
+diff --git a/scripts/postinst-intercepts/update_font_cache b/scripts/postinst-intercepts/update_font_cache
+index bf65e19..e797c65 100644
+--- a/scripts/postinst-intercepts/update_font_cache
++++ b/scripts/postinst-intercepts/update_font_cache
+@@ -2,6 +2,5 @@
+ 
+ set -e
+ 
+-PSEUDO_UNLOAD=1 qemuwrapper -L $D -E LD_LIBRARY_PATH=$D/${libdir}:$D/${base_libdir} \
+-					-E ${fontconfigcacheenv} $D${bindir}/fc-cache --sysroot=$D --system-only ${fontconfigcacheparams}
++PSEUDO_UNLOAD=1 qemuwrapper -L $D -E ${fontconfigcacheenv} $D${bindir}/fc-cache --sysroot=$D --system-only ${fontconfigcacheparams}
+ chown -R root:root $D${fontconfigcachedir}
+diff --git a/scripts/postinst-intercepts/update_gio_module_cache b/scripts/postinst-intercepts/update_gio_module_cache
+index fc3f9d0..7ad9c5a 100644
+--- a/scripts/postinst-intercepts/update_gio_module_cache
++++ b/scripts/postinst-intercepts/update_gio_module_cache
+@@ -2,8 +2,7 @@
+ 
+ set -e
+ 
+-PSEUDO_UNLOAD=1 qemuwrapper -L $D -E LD_LIBRARY_PATH=$D${libdir}:$D${base_libdir} \
+-	$D${libexecdir}/${binprefix}gio-querymodules $D${libdir}/gio/modules/
++PSEUDO_UNLOAD=1 qemuwrapper -L $D $D${libexecdir}/${binprefix}gio-querymodules $D${libdir}/gio/modules/
+ 
+ [ ! -e $D${libdir}/gio/modules/giomodule.cache ] ||
+ 	chown root:root $D${libdir}/gio/modules/giomodule.cache
+diff --git a/scripts/postinst-intercepts/update_pixbuf_cache b/scripts/postinst-intercepts/update_pixbuf_cache
+index 5d44075..efb56fa 100644
+--- a/scripts/postinst-intercepts/update_pixbuf_cache
++++ b/scripts/postinst-intercepts/update_pixbuf_cache
+@@ -5,7 +5,6 @@ set -e
+ export GDK_PIXBUF_MODULEDIR=$D${libdir}/gdk-pixbuf-2.0/2.10.0/loaders
+ export GDK_PIXBUF_FATAL_LOADER=1
+ 
+-PSEUDO_UNLOAD=1 qemuwrapper -L $D -E LD_LIBRARY_PATH=$D/${libdir}:$D/${base_libdir}\
+-    $D${libdir}/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders \
++PSEUDO_UNLOAD=1 qemuwrapper -L $D $D${libdir}/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders \
+     >$GDK_PIXBUF_MODULEDIR/../loaders.cache && \
+     sed -i -e "s:$D::g" $GDK_PIXBUF_MODULEDIR/../loaders.cache
