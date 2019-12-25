@@ -4,12 +4,10 @@ HARDWARE_PACKAGES = "kernel-modules \
 										linux-firmware-rpidistro-bcm43455 \
 										"
 
-NETWORK_PACKAGES = "i2c-tools \
-										bridge-utils \
-										hostapd \
-										dhcp-server \
-										iptables \
-										wpa-supplicant \
+NETWORK_PACKAGES = "connman \
+										connman-client \
+										connman-tools \
+										connman-wait-online \
 										packagegroup-core-ssh-openssh \
 										"
 
